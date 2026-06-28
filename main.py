@@ -264,6 +264,41 @@ def fmt_money(value):
         value = 0
     return f"{value:,.0f}".replace(",", ".") + " so'm"
 
+
+
+def category_uz(value):
+    mp = {
+        "house": "Xo'jalik mahsulotlari",
+        "stationery": "Konstovar",
+        "books": "Kitob",
+        "book": "Kitob",
+        "water": "Suv",
+        "debt": "Qarzdorlik",
+        "all": "Umumiy",
+    }
+    return mp.get(str(value or ""), str(value or ""))
+
+def buyer_type_uz(value):
+    v = str(value or "")
+    mp = {
+        "Oquvchi": "O'quvchi",
+        "student": "O'quvchi",
+        "branch": "Filial",
+        "Filial": "Filial",
+    }
+    return mp.get(v, v)
+
+def file_kind_uz(kind):
+    mp = {
+        "books": "kitob",
+        "house": "xojalik",
+        "stationery": "konstovar",
+        "water": "suv",
+        "debt": "qarzdorlik",
+        "all": "umumiy",
+    }
+    return mp.get(kind, kind)
+
 def parse_money(text):
     raw = (text or "").lower().replace("so'm", "").replace("sum", "").replace("сум", "")
     raw = raw.replace(" ", "").replace(".", "").replace(",", "")
@@ -380,10 +415,10 @@ def save_report(kind, period=None):
         tb=ts=pf=0
         for r in data:
             tb += float(r['total_buy'] or 0); ts += float(r['total_sell'] or 0); pf += float(r['profit'] or 0)
-            ws.append([r['dt'],r['buyer_type'],r['filial'] or '',r['book'],r['level'],r['qty'],fmt_money(r['buy_price']),fmt_money(r['sell_price']),fmt_money(r['total_buy']),fmt_money(r['total_sell']),fmt_money(r['profit'])])
+            ws.append([r['dt'],buyer_type_uz(r['buyer_type']),r['filial'] or '',r['book'],r['level'],r['qty'],fmt_money(r['buy_price']),fmt_money(r['sell_price']),fmt_money(r['total_buy']),fmt_money(r['total_sell']),fmt_money(r['profit'])])
         ws.append([]); ws.append(["JAMI", "", "", "", "", "", "", "", fmt_money(tb), fmt_money(ts), fmt_money(pf)])
     elif kind in ("house","stationery"):
-        ws.title="Xojalik" if kind=="house" else "Konstovar"
+        ws.title="Xo'jalik" if kind=="house" else "Konstovar"
         ws.append(["Sana","Kategoriya","Filial","Mahsulot","Soni","Olingan narx","Jami qiymat"])
         base="SELECT g.*, COALESCE(g.item_name,i.name,'O''chirilgan mahsulot') AS item FROM item_gives g LEFT JOIN items i ON i.id=g.item_id WHERE g.category=?"
         args=[kind]
@@ -397,7 +432,7 @@ def save_report(kind, period=None):
         total=0
         for r in data:
             total += float(r['total_buy'] or 0)
-            ws.append([r['dt'],r['category'],r['filial'],r['item'],r['qty'],fmt_money(r['buy_price']),fmt_money(r['total_buy'])])
+            ws.append([r['dt'],category_uz(r['category']),r['filial'],r['item'],r['qty'],fmt_money(r['buy_price']),fmt_money(r['total_buy'])])
         ws.append([]); ws.append(["JAMI", "", "", "", "", "", fmt_money(total)])
     elif kind=="water":
         ws.title="Suv"
@@ -490,18 +525,18 @@ def save_report(kind, period=None):
         where,args = _period_condition(period, "s")
         for r in rows("SELECT s.*, COALESCE(s.book_name,b.name,'O''chirilgan kitob') AS book, COALESCE(s.level_name,l.name,'O''chirilgan daraja') AS level FROM book_sales s LEFT JOIN books b ON b.id=s.book_id LEFT JOIN levels l ON l.id=s.level_id" + where + " ORDER BY s.dt DESC", args):
             total_buy += float(r['total_buy'] or 0); total_sell += float(r['total_sell'] or 0); total_profit += float(r['profit'] or 0)
-            ws.append(["Kitob",r['dt'],f"{r['book']} / {r['level']} / {r['buyer_type']} {r['filial'] or ''}",r['qty'],fmt_money(r['total_buy']),fmt_money(r['total_sell']),fmt_money(r['profit'])])
+            ws.append(["Kitob",r['dt'],f"{r['book']} / {r['level']} / {buyer_type_uz(r['buyer_type'])} {r['filial'] or ''}",r['qty'],fmt_money(r['total_buy']),fmt_money(r['total_sell']),fmt_money(r['profit'])])
         where,args = _period_condition(period, "g")
         for r in rows("SELECT g.*, COALESCE(g.item_name,i.name,'O''chirilgan mahsulot') AS item FROM item_gives g LEFT JOIN items i ON i.id=g.item_id" + where + " ORDER BY g.dt DESC", args):
             total_buy += float(r['total_buy'] or 0)
-            ws.append([r['category'],r['dt'],f"{r['item']} -> {r['filial']}",r['qty'],fmt_money(r['total_buy']),fmt_money(0),fmt_money(0)])
+            ws.append([category_uz(r['category']),r['dt'],f"{r['item']} -> {r['filial']}",r['qty'],fmt_money(r['total_buy']),fmt_money(0),fmt_money(0)])
         where,args = _period_condition(period)
         for r in rows("SELECT * FROM water_sales" + where + " ORDER BY dt DESC", args):
             total_buy += float(r['total_sell'] or 0)
             ws.append(["Suv",r['dt'],f"{r['filial']} ga berildi",r['qty'],fmt_money(r['total_sell']),fmt_money(0),fmt_money(0)])
         ws.append([]); ws.append(["JAMI", "", "", "", fmt_money(total_buy), fmt_money(total_sell), fmt_money(total_profit)])
     style_sheet(ws)
-    path=REPORT_DIR/f"{kind}_{suffix}_hisobot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    path=REPORT_DIR/f"{file_kind_uz(kind)}_{suffix}_hisobot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     wb.save(path); return path
 
 # ---------- Handlers ----------
@@ -840,7 +875,7 @@ async def qty_input(m,state):
         lev=one("SELECT l.*, b.name AS book_name FROM levels l JOIN books b ON b.id=l.book_id WHERE l.id=?",(lid,)); book_id=lev['book_id']; filial=d.get('filial')
         total_buy=lev['buy_price']*qty; total_sell=lev['sell_price']*qty
         execute("INSERT INTO book_sales(dt,buyer_type,filial,book_id,level_id,book_name,level_name,qty,buy_price,sell_price,total_buy,total_sell,profit) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (now(), 'Oquvchi' if d['sale_type']=='student' else 'Filial', filial, book_id,lid,lev['book_name'],lev['name'],qty,lev['buy_price'],lev['sell_price'],total_buy,total_sell,total_sell-total_buy))
+                (now(), "O'quvchi" if d['sale_type']=='student' else 'Filial', filial, book_id,lid,lev['book_name'],lev['name'],qty,lev['buy_price'],lev['sell_price'],total_buy,total_sell,total_sell-total_buy))
         execute("UPDATE book_stock SET qty=qty-? WHERE level_id=?",(qty,lid))
         await state.clear(); await m.answer(f"✅ Kitob sotildi. Jami: {fmt_money(total_sell)}", reply_markup=book_kb())
     elif d.get('give_item'):
