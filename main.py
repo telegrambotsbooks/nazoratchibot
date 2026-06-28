@@ -9,6 +9,7 @@ except Exception:
     psycopg2 = None
     RealDictCursor = None
 from datetime import datetime, date
+from calendar import monthrange
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, Awaitable
 
@@ -40,6 +41,14 @@ FILIALS = [
     "6-Kids2", "7-Do’stobod", "8-Olmazor", "9-Chinoz", "10-Krasin",
     "11-Pitiletka", "12-Qo’rg’oncha", "13-Kids 3", "14-Oqqo’rg’on", "15-Qo’shyog’och"
 ]
+
+MONTHS_UZ = [
+    (1, "Yanvar"), (2, "Fevral"), (3, "Mart"), (4, "Aprel"),
+    (5, "May"), (6, "Iyun"), (7, "Iyul"), (8, "Avgust"),
+    (9, "Sentabr"), (10, "Oktabr"), (11, "Noyabr"), (12, "Dekabr")
+]
+MONTH_LABEL_TO_NUM = {f"📅 {name}": num for num, name in MONTHS_UZ}
+
 
 router = Router()
 USER_MENU_CAT = {}  # user_id -> house/stationery, menu tugmalari uchun
@@ -269,20 +278,6 @@ def role_of(uid:int)->Optional[str]:
     # oddiy sessiya: user fsmda saqlanadi, bu funksiya kelajak uchun joy
     return None
 
-def rows(q, args=()):
-    with db() as con: return con.execute(q, args).fetchall()
-def one(q,args=()):
-    with db() as con: return con.execute(q,args).fetchone()
-def execute(q,args=()):
-    with db() as con:
-        cur=con.execute(q,args); con.commit(); return cur.lastrowid
-
-def stock_qty(level_id):
-    r=one("SELECT qty FROM book_stock WHERE level_id=?",(level_id,)); return int(r[0]) if r else 0
-
-def item_qty(item_id):
-    r=one("SELECT qty FROM item_stock WHERE item_id=?",(item_id,)); return int(r[0]) if r else 0
-
 # ---------- Keyboard ----------
 def kb(buttons, cols=2):
     b=InlineKeyboardBuilder()
@@ -312,6 +307,10 @@ def book_sale_kb():
 def reports_kb(): return rkb(["📚 Kitob Excel","🧹 Xo'jalik Excel","✏️ Konstovar Excel","💧 Suv Excel","📊 Umumiy Excel","💳 Qarzdorlik Excel","💳 Qarzdorlik ko'rish","⬅️ Orqaga"],2)
 def water_kb(): return rkb(["💧 Suv berish","⬅️ Orqaga"],2)
 
+def month_kb():
+    return rkb([f"📅 {name}" for _, name in MONTHS_UZ] + ["⬅️ Orqaga"], 2)
+
+
 def book_buttons(prefix):
     bs=rows("SELECT * FROM books ORDER BY name")
     if not bs: return None
@@ -336,34 +335,173 @@ def style_sheet(ws):
     for col in ws.columns:
         ws.column_dimensions[col[0].column_letter].width=max(12,min(35,max(len(str(c.value or "")) for c in col)+2))
 
-def save_report(kind):
+def _period_condition(period, alias=""):
+    """Hisobot uchun kunlik/oylik filter qaytaradi."""
+    prefix = ""
+    if period == "daily":
+        prefix = date.today().strftime("%Y-%m-%d")
+    elif period == "monthly":
+        prefix = date.today().strftime("%Y-%m")
+    elif isinstance(period, str) and period.startswith("month:"):
+        # Masalan: month:2026-01 => 2026-yil yanvar hisobotini chiqaradi
+        prefix = period.split(":", 1)[1]
+    if not prefix:
+        return "", ()
+    field = f"{alias}.dt" if alias else "dt"
+    return f" WHERE {field} LIKE ?", (prefix + "%",)
+
+def _append_total_row(ws, label, total_buy=0, total_sell=0, profit=0):
+    ws.append([])
+    ws.append([label, "", "", "", "", "", fmt_money(total_buy), fmt_money(total_sell), fmt_money(profit)])
+    for cell in ws[ws.max_row]:
+        cell.font = Font(bold=True)
+
+def save_report(kind, period=None):
+    """
+    Excel hisobot yaratadi.
+    period=None    -> umumiy hammasi
+    period='daily' -> bugungi hisobot
+    period='monthly' -> shu oy hisobot
+    """
     wb=Workbook(); ws=wb.active
+    suffix = "umumiy"
+    if period == "daily":
+        suffix = "kunlik"
+    elif period == "monthly":
+        suffix = "oylik"
+    elif isinstance(period, str) and period.startswith("month:"):
+        suffix = period.split(":", 1)[1]
+
     if kind=="books":
-        ws.title="Kitob sotuv"; ws.append(["Sana","Kimga","Filial","Kitob","Daraja","Soni","Asil narx","Sotuv narx","Jami asil","Jami asil narx","Foyda"])
-        data=rows("SELECT s.*, COALESCE(s.book_name,b.name,'O''chirilgan kitob') AS book, COALESCE(s.level_name,l.name,'O''chirilgan daraja') AS level FROM book_sales s LEFT JOIN books b ON b.id=s.book_id LEFT JOIN levels l ON l.id=s.level_id ORDER BY s.dt DESC")
-        for r in data: ws.append([r['dt'],r['buyer_type'],r['filial'] or '',r['book'],r['level'],r['qty'],fmt_money(r['buy_price']),fmt_money(r['sell_price']),fmt_money(r['total_buy']),fmt_money(r['total_sell']),fmt_money(r['profit'])])
+        ws.title="Kitob sotuv"
+        ws.append(["Sana","Kimga","Filial","Kitob","Daraja","Soni","Asil narx","Sotuv narx","Jami asil","Jami sotuv","Foyda"])
+        where,args = _period_condition(period, "s")
+        data=rows("SELECT s.*, COALESCE(s.book_name,b.name,'O''chirilgan kitob') AS book, COALESCE(s.level_name,l.name,'O''chirilgan daraja') AS level FROM book_sales s LEFT JOIN books b ON b.id=s.book_id LEFT JOIN levels l ON l.id=s.level_id" + where + " ORDER BY s.dt DESC", args)
+        tb=ts=pf=0
+        for r in data:
+            tb += float(r['total_buy'] or 0); ts += float(r['total_sell'] or 0); pf += float(r['profit'] or 0)
+            ws.append([r['dt'],r['buyer_type'],r['filial'] or '',r['book'],r['level'],r['qty'],fmt_money(r['buy_price']),fmt_money(r['sell_price']),fmt_money(r['total_buy']),fmt_money(r['total_sell']),fmt_money(r['profit'])])
+        ws.append([]); ws.append(["JAMI", "", "", "", "", "", "", "", fmt_money(tb), fmt_money(ts), fmt_money(pf)])
     elif kind in ("house","stationery"):
-        ws.title=kind; ws.append(["Sana","Kategoriya","Filial","Mahsulot","Soni","Olingan narx","Jami qiymat"])
-        data=rows("SELECT g.*, COALESCE(g.item_name,i.name,'O''chirilgan mahsulot') AS item FROM item_gives g LEFT JOIN items i ON i.id=g.item_id WHERE g.category=? ORDER BY g.dt DESC",(kind,))
-        for r in data: ws.append([r['dt'],r['category'],r['filial'],r['item'],r['qty'],fmt_money(r['buy_price']),fmt_money(r['total_buy'])])
+        ws.title="Xojalik" if kind=="house" else "Konstovar"
+        ws.append(["Sana","Kategoriya","Filial","Mahsulot","Soni","Olingan narx","Jami qiymat"])
+        base="SELECT g.*, COALESCE(g.item_name,i.name,'O''chirilgan mahsulot') AS item FROM item_gives g LEFT JOIN items i ON i.id=g.item_id WHERE g.category=?"
+        args=[kind]
+        if period == "daily":
+            base += " AND g.dt LIKE ?"; args.append(date.today().strftime("%Y-%m-%d") + "%")
+        elif period == "monthly":
+            base += " AND g.dt LIKE ?"; args.append(date.today().strftime("%Y-%m") + "%")
+        elif isinstance(period, str) and period.startswith("month:"):
+            base += " AND g.dt LIKE ?"; args.append(period.split(":", 1)[1] + "%")
+        data=rows(base + " ORDER BY g.dt DESC", tuple(args))
+        total=0
+        for r in data:
+            total += float(r['total_buy'] or 0)
+            ws.append([r['dt'],r['category'],r['filial'],r['item'],r['qty'],fmt_money(r['buy_price']),fmt_money(r['total_buy'])])
+        ws.append([]); ws.append(["JAMI", "", "", "", "", "", fmt_money(total)])
     elif kind=="water":
-        ws.title="Suv"; ws.append(["Sana","Filial","Baklashka","Har bir asil narx","Jami asil narx"])
-        for r in rows("SELECT * FROM water_sales ORDER BY dt DESC"): ws.append([r['dt'],r['filial'],r['qty'],fmt_money(r['sell_price']),fmt_money(r['total_sell'])])
+        ws.title="Suv"
+
+        def month_name_uz(month_number):
+            for n, name in MONTHS_UZ:
+                if n == month_number:
+                    return name.lower()
+            return str(month_number)
+
+        where, args = _period_condition(period)
+        data = rows(
+            "SELECT SUBSTR(dt,1,10) AS d, filial, SUM(qty) AS qty, SUM(total_sell) AS total_sum "
+            "FROM water_sales" + where + " GROUP BY SUBSTR(dt,1,10), filial ORDER BY d ASC",
+            args,
+        )
+
+        # Ustunlar: oy tanlangan bo'lsa shu oyning hamma kunlari chiqadi,
+        # filial suv olmagan kunlarda 0 yoziladi.
+        if isinstance(period, str) and period.startswith("month:"):
+            ym = period.split(":", 1)[1]
+            year, month = map(int, ym.split("-"))
+            days = [f"{ym}-{day:02d}" for day in range(1, monthrange(year, month)[1] + 1)]
+        elif period == "monthly":
+            today = date.today()
+            ym = today.strftime("%Y-%m")
+            days = [f"{ym}-{day:02d}" for day in range(1, monthrange(today.year, today.month)[1] + 1)]
+        elif period == "daily":
+            days = [date.today().strftime("%Y-%m-%d")]
+        else:
+            days = sorted({str(r["d"]) for r in data})
+
+        if days:
+            first = datetime.strptime(days[0], "%Y-%m-%d").date()
+            headers = [f"{d.day}-{month_name_uz(d.month)}" for d in (datetime.strptime(x, "%Y-%m-%d").date() for x in days)]
+        else:
+            first = date.today()
+            headers = []
+
+        matrix = {filial: {day: 0 for day in days} for filial in FILIALS}
+        total_cost = 0
+        for r in data:
+            filial = r["filial"]
+            day = str(r["d"])
+            if filial not in matrix:
+                matrix[filial] = {x: 0 for x in days}
+            if day not in matrix[filial]:
+                matrix[filial][day] = 0
+            matrix[filial][day] += int(r["qty"] or 0)
+            total_cost += float(r["total_sum"] or 0)
+
+        ws.cell(row=1, column=1, value="Filiallar")
+        if headers:
+            ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=1+len(headers))
+            ws.cell(row=1, column=2, value="Sana")
+        for i, h in enumerate(headers, start=2):
+            ws.cell(row=2, column=i, value=h)
+
+        for row_idx, filial in enumerate(FILIALS, start=3):
+            ws.cell(row=row_idx, column=1, value=filial)
+            for col_idx, day in enumerate(days, start=2):
+                ws.cell(row=row_idx, column=col_idx, value=matrix.get(filial, {}).get(day, 0))
+
+        total_row = 3 + len(FILIALS)
+        ws.cell(row=total_row, column=1, value="JAMI")
+        for col_idx, day in enumerate(days, start=2):
+            ws.cell(row=total_row, column=col_idx, value=sum(matrix.get(f, {}).get(day, 0) for f in matrix))
+        ws.cell(row=total_row + 2, column=1, value="Jami asil qiymat")
+        ws.cell(row=total_row + 2, column=2, value=fmt_money(total_cost))
+
+        # Jadval ko'rinishi rasmga o'xshashi uchun sarlavhalarni kattaroq va markazda qilamiz.
+        for row in ws.iter_rows(min_row=1, max_row=2):
+            for cell in row:
+                cell.font = Font(bold=True, size=14)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+        for row in ws.iter_rows(min_row=3, max_row=total_row):
+            for cell in row:
+                cell.font = Font(bold=True, size=12)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
     elif kind=="debt":
         ws.title="Qarzdorlik"
         ws.append(["Sana", "Bugungi sotuv", "Qabul qilingan", "Qarz o'zgarishi", "Jami qarz", "Izoh"])
-        for r in rows("SELECT * FROM payments ORDER BY dt DESC"):
+        where,args = _period_condition(period)
+        for r in rows("SELECT * FROM payments" + where + " ORDER BY dt DESC", args):
             ws.append([r['dt'], fmt_money(r['sales_total']), fmt_money(r['accepted']), fmt_money(r['debt_change']), fmt_money(r['debt_after']), r['note'] or ""])
     else:
-        ws.title="Umumiy"; ws.append(["Bo'lim","Sana","Izoh","Soni","Asil qiymat","Sotuv summa","Foyda"])
-        for r in rows("SELECT s.*, COALESCE(s.book_name,b.name,'O''chirilgan kitob') AS book, COALESCE(s.level_name,l.name,'O''chirilgan daraja') AS level FROM book_sales s LEFT JOIN books b ON b.id=s.book_id LEFT JOIN levels l ON l.id=s.level_id ORDER BY s.dt DESC"):
+        ws.title="Umumiy"
+        ws.append(["Bo'lim","Sana","Izoh","Soni","Asil qiymat","Sotuv summa","Foyda"])
+        total_buy=total_sell=total_profit=0
+        where,args = _period_condition(period, "s")
+        for r in rows("SELECT s.*, COALESCE(s.book_name,b.name,'O''chirilgan kitob') AS book, COALESCE(s.level_name,l.name,'O''chirilgan daraja') AS level FROM book_sales s LEFT JOIN books b ON b.id=s.book_id LEFT JOIN levels l ON l.id=s.level_id" + where + " ORDER BY s.dt DESC", args):
+            total_buy += float(r['total_buy'] or 0); total_sell += float(r['total_sell'] or 0); total_profit += float(r['profit'] or 0)
             ws.append(["Kitob",r['dt'],f"{r['book']} / {r['level']} / {r['buyer_type']} {r['filial'] or ''}",r['qty'],fmt_money(r['total_buy']),fmt_money(r['total_sell']),fmt_money(r['profit'])])
-        for r in rows("SELECT g.*, COALESCE(g.item_name,i.name,'O''chirilgan mahsulot') AS item FROM item_gives g LEFT JOIN items i ON i.id=g.item_id ORDER BY g.dt DESC"):
+        where,args = _period_condition(period, "g")
+        for r in rows("SELECT g.*, COALESCE(g.item_name,i.name,'O''chirilgan mahsulot') AS item FROM item_gives g LEFT JOIN items i ON i.id=g.item_id" + where + " ORDER BY g.dt DESC", args):
+            total_buy += float(r['total_buy'] or 0)
             ws.append([r['category'],r['dt'],f"{r['item']} -> {r['filial']}",r['qty'],fmt_money(r['total_buy']),fmt_money(0),fmt_money(0)])
-        for r in rows("SELECT * FROM water_sales ORDER BY dt DESC"):
+        where,args = _period_condition(period)
+        for r in rows("SELECT * FROM water_sales" + where + " ORDER BY dt DESC", args):
+            total_buy += float(r['total_sell'] or 0)
             ws.append(["Suv",r['dt'],f"{r['filial']} ga berildi",r['qty'],fmt_money(r['total_sell']),fmt_money(0),fmt_money(0)])
+        ws.append([]); ws.append(["JAMI", "", "", "", fmt_money(total_buy), fmt_money(total_sell), fmt_money(total_profit)])
     style_sheet(ws)
-    path=REPORT_DIR/f"{kind}_hisobot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    path=REPORT_DIR/f"{kind}_{suffix}_hisobot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     wb.save(path); return path
 
 # ---------- Handlers ----------
@@ -558,13 +696,25 @@ async def msg_controller_buttons(m: Message, state: FSMContext):
     elif m.text == "💰 Kunlik tushum":
         await ctrl_daily_message(m)
     elif m.text == "📩 Kunlik Excel":
-        path=save_report('all')
+        path=save_report('all', period='daily')
         await m.answer_document(FSInputFile(path), caption="✅ Kunlik Excel tayyor.", reply_markup=controller_kb())
     elif m.text == "📅 Oylik Excel":
-        path=save_report('all')
-        await m.answer_document(FSInputFile(path), caption="✅ Oylik Excel tayyor.", reply_markup=controller_kb())
+        await m.answer("Qaysi oy hisobotini yuklaysiz?", reply_markup=month_kb())
     elif m.text == "💳 Qarzni to‘lash":
         await start_payment_message(m, state)
+
+@router.message(F.text.in_(set(MONTH_LABEL_TO_NUM.keys())))
+async def msg_month_excel(m: Message):
+    month_num = MONTH_LABEL_TO_NUM[m.text]
+    year = date.today().year
+    period = f"month:{year}-{month_num:02d}"
+    month_name = m.text.replace("📅 ", "")
+    path = save_report('all', period=period)
+    await m.answer_document(
+        FSInputFile(path),
+        caption=f"✅ {year}-yil {month_name} oyi Excel hisobot tayyor.",
+        reply_markup=controller_kb()
+    )
 
 @router.callback_query(F.data=="seller:books")
 async def seller_books(c:CallbackQuery): await c.message.answer("📚 Kitob sotuv bo'limi:", reply_markup=book_kb())
@@ -783,9 +933,9 @@ async def water_price(m,state):
 async def report(c):
     kind=c.data.split(':')[1]; path=save_report(kind); await c.message.answer_document(FSInputFile(path), caption="✅ Excel hisobot tayyor.")
 @router.callback_query(F.data=="ctrl:daily")
-async def ctrl_daily(c): await c.message.answer_document(FSInputFile(save_report('all')), caption="📅 Kunlik/umumiy Excel hisobot")
+async def ctrl_daily(c): await c.message.answer_document(FSInputFile(save_report('all', period='daily')), caption="📅 Kunlik Excel hisobot")
 @router.callback_query(F.data=="ctrl:monthly")
-async def ctrl_monthly(c): await c.message.answer_document(FSInputFile(save_report('all')), caption="🗓 Oylik/umumiy Excel hisobot")
+async def ctrl_monthly(c): await c.message.answer_document(FSInputFile(save_report('all', period='monthly')), caption="🗓 Oylik Excel hisobot")
 @router.callback_query(F.data=="ctrl:stock")
 async def ctrl_stock(c):
     await c.message.answer(controller_stock_text(), reply_markup=controller_kb())

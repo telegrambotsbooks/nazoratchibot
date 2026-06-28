@@ -1,39 +1,35 @@
-# Savdo Nazorat Telegram Bot — Railway tayyor
+# Savdo Nazorat Bot — Railway Ready
 
-## Local ishga tushirish
+Bu versiya Railway uchun moslangan.
 
-```powershell
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
-python main.py
-```
+## Muhim
+- Railway'da PostgreSQL qo'shilsa `DATABASE_URL` avtomatik chiqadi.
+- Bot barcha ma'lumotlarni PostgreSQL bazaga saqlaydi.
+- Railway qayta deploy bo'lsa ham ma'lumotlar o'chib ketmaydi.
+- `bot.db` SQLite faqat local test uchun ishlaydi. Railway'da PostgreSQL ishlatish shart.
 
-`.env` ichiga `BOT_TOKEN` yozing. Localda `DATABASE_URL` yozilmasa bot `bot.db` SQLite bilan ishlaydi.
-
-## Railway deploy
-
-1. Papkani GitHub'ga push qiling.
-2. Railway'da **New Project → Deploy from GitHub repo** qiling.
-3. Railway'da **PostgreSQL** qo'shing.
-4. Bot service Variables ichiga quyidagilarni yozing:
+## Railway Variables
+Railway → Variables ichiga yozing:
 
 ```env
-BOT_TOKEN=BotFatherdan_olingan_token
+BOT_TOKEN=telegram_bot_token
 SELLER_LOGIN=sotuvchi
 SELLER_PASSWORD=12345
 CONTROLLER_LOGIN=nazoratchi
 CONTROLLER_PASSWORD=54321
 ```
 
-5. PostgreSQL qo'shilgandan keyin Railway `DATABASE_URL` ni o'zi beradi. Bot avtomatik PostgreSQL ishlatadi.
-6. Deploy qiling.
+`DATABASE_URL` ni qo'lda yozmang. PostgreSQL qo'shilganda Railway o'zi beradi.
 
-Start command: `python main.py`
+## Hisobotlar
+- Kunlik Excel — faqat bugungi yozuvlarni chiqaradi.
+- Oylik Excel — shu oyning yozuvlarini chiqaradi.
+- Umumiy Excel — barcha yozuvlarni chiqaradi.
+- Suv berish sotuvga qo'shilmaydi, lekin hisobotga chiqadi.
+- Qarzdorlik PostgreSQL'da `payments` jadvalida saqlanadi.
 
-## Muhim
-
-- `.env` faylni GitHub'ga chiqarmang.
-- Tokenni chatga yoki GitHub'ga tashlamang.
-- Railway'da ma'lumotlar PostgreSQL'da saqlanadi.
+## Ishga tushirish local
+```bash
+pip install -r requirements.txt
+python main.py
+```
